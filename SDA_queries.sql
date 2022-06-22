@@ -336,6 +336,7 @@ where website_sessions.created_at between '2012-11-04' and '2012-12-22'
 and utm_campaign='nonbrand'
 group by yearweek(created_at);
 
+select * from website_sessions;
 
 
 
