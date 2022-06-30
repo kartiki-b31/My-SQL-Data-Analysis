@@ -336,7 +336,262 @@ where website_sessions.created_at between '2012-11-04' and '2012-12-22'
 and utm_campaign='nonbrand'
 group by yearweek(created_at);
 
-select * from website_sessions;
+
+select 
+primary_product_id,
+count(order_id) as orders,
+sum(price_usd) as revenue,
+sum(price_usd - cogs_usd) as margin,
+avg(price_usd) as aov
+from orders where order_id between 10000 and 11000
+group by 1
+order by 2 desc;
+
+select 
+year(created_at) as yr,
+month(created_at) as mo,
+count(distinct order_id) as number_of_sales,
+sum(price_usd) as total_revenue,
+sum(price_usd - cogs_usd) as total_margin,
+avg(price_usd) as aov
+from orders where created_at <'2013-01-04'
+group by year(created_at),
+month(created_at);
+
+select 
+year(website_sessions.created_at) as yr,
+month(website_sessions.created_at) as mo,
+count(distinct website_sessions.website_session_id) as sessions,
+count(distinct orders.order_id) as orders,
+count(distinct orders.order_id)/count(distinct website_sessions.website_session_id) as conv_rate,
+sum(orders.price_usd)/count(distinct website_sessions.website_session_id)  as revenue_per_session,
+count(distinct case when primary_product_id=1 then order_id else null end) as product_one_orders,
+count(distinct case when primary_product_id=2 then order_id else null end) as product_two_orders
+from website_sessions
+left join orders
+on website_sessions.website_session_id=orders.website_session_id
+
+ where website_sessions.created_at < '2013-04-05'
+ and website_sessions.created_at > '2012-04-01'
+group by year(created_at),
+month(created_at);
+
+
+create temporary table products_pageviews
+SELECT
+website_session_id,
+website_pageview_id,
+created_at,
+case when created_at < '2013-01-06' then 'A. Pre_Product_2'
+when created_at >= '2013-01-06' then 'B. Post_Product_2'
+else 'uh oh ....check logic'
+end as time_period
+from website_pageviews
+where created_at < '2013-04-06'
+and created_at > '2012-10-06'
+and pageview_url='/products';
+
+select * from products_pageviews;
+
+
+CREATE TEMPORARY TABLE session_w_next_pageview_id
+select 
+products_pageviews.time_period,
+products_pageviews.website_session_id,
+min(website_pageviews.website_pageview_id) as min_next_pageview_id
+from products_pageviews
+left join website_pageviews
+on website_pageviews.website_session_id =products_pageviews.website_session_id
+and website_pageviews.website_pageview_id  > products_pageviews.website_pageview_id
+group by 1,2;
+
+
+select * from session_w_next_pageview_id;
+
+create temporary table sessions_w_next_pageview_url
+select session_w_next_pageview_id.time_period,
+session_w_next_pageview_id.website_session_id,
+website_pageviews.pageview_url as next_pageview_url
+from session_w_next_pageview_id
+left join website_pageviews
+on website_pageviews.website_pageview_id=session_w_next_pageview_id.min_next_pageview_id;
+
+select distinct next_pageview_url from sessions_w_next_pageview_url;
+
+select
+time_period,
+count(distinct website_session_id) as sessions,
+count(distinct case when next_pageview_url is not null then website_session_id else null end) as w_next_pg,
+count(distinct case when next_pageview_url is not null then website_session_id else null end)/count(distinct website_session_id) as pct_w_next_page_view
+
+from sessions_w_next_pageview_url
+group by time_period;
+
+
+create temporary table sessions_seeing_cart
+select 
+case
+ when created_at < '2013-09-25' then 'A. Pre_Cross_sell'
+ when created_at >= '2012-01-06' then 'B. Post_Cross_Sell'
+ else 'uh oh...check logic'
+ end as time_period,
+ website_session_id as cart_session_id,
+ website_pageview_id as cart_pageview_id
+from website_pageviews
+where created_at between '2013-08-25' and '2013-10-25'
+and pageview_url='/cart';
+
+
+select * from sessions_seeing_cart;
+
+
+create temporary table cart_sessions_seeing_another_page
+select 
+sessions_seeing_cart.time_period,
+sessions_seeing_cart.cart_session_id,
+min(website_pageviews.website_pageview_id) as pv_id_after_cart
+from sessions_seeing_cart
+left join website_pageviews
+on sessions_seeing_cart.cart_session_id=website_pageviews.website_session_id
+and sessions_seeing_cart.cart_pageview_id < website_pageviews.website_pageview_id
+group by
+sessions_seeing_cart.time_period,
+sessions_seeing_cart.cart_session_id
+having min(website_pageviews.website_pageview_id) is not null;
+
+
+create temporary table pre_post_sessions_orders
+select 
+time_period,
+cart_session_id,
+order_id,
+items_purchased,
+price_usd
+from 
+sessions_seeing_cart
+inner join orders
+on sessions_seeing_cart.cart_session_id=orders.website_session_id;
+
+
+select
+sessions_seeing_cart.time_period,
+sessions_seeing_cart.cart_session_id,
+case when cart_sessions_seeing_another_page.cart_session_id is null then 0 else 1 end as clicked_to_another_page,
+case when pre_post_sessions_orders.order_id is null then 0 else 1 end as placed_order,
+pre_post_sessions_orders.items_purchased,
+pre_post_sessions_orders.price_usd
+from 
+sessions_seeing_cart
+left join cart_sessions_seeing_another_page
+on cart_sessions_seeing_another_page.cart_session_id=sessions_seeing_cart.cart_session_id
+left join pre_post_sessions_orders
+on pre_post_sessions_orders.cart_session_id=sessions_seeing_cart.cart_session_id
+order by
+cart_session_id;
+
+select
+time_period,
+count(distinct cart_session_id) as acrt_sessions,
+sum(clicked_to_another_page) as clickthroughs,
+sum(clicked_to_another_page)/count(distinct cart_session_id) as cart_ctr,
+sum(placed_order) as orders_plced,
+sum(items_purchased) as products_purchased,
+sum(items_purchased)/sum(placed_order) as product_per_order,
+sum(price_usd) as revenue,
+sum(price_usd)/sum(placed_order) as aov,
+sum(price_usd)/count(distinct cart_session_id) as rev_per_cart_session
+
+
+
+from(
+select
+sessions_seeing_cart.time_period,
+sessions_seeing_cart.cart_session_id,
+case when cart_sessions_seeing_another_page.cart_session_id is null then 0 else 1 end as clicked_to_another_page,
+case when pre_post_sessions_orders.order_id is null then 0 else 1 end as placed_order,
+pre_post_sessions_orders.items_purchased,
+pre_post_sessions_orders.price_usd
+from 
+sessions_seeing_cart
+left join cart_sessions_seeing_another_page
+on cart_sessions_seeing_another_page.cart_session_id=sessions_seeing_cart.cart_session_id
+left join pre_post_sessions_orders
+on pre_post_sessions_orders.cart_session_id=sessions_seeing_cart.cart_session_id
+order by
+cart_session_id
+) as full_data
+group by time_period;
+
+
+select 
+case 
+when website_sessions.created_at < '2013-12-12' then 'A. Pre_Birtheday_bear'
+when website_sessions.created_at >= '2013-12-12' then 'B. Post_Birthday_Bear'
+else 'uh oh...check logic'
+end as time_period,
+count(distinct website_sessions.website_session_id) as sesions,
+count(distinct orders.order_id) as orders,
+count(distinct orders.order_id)/count(distinct website_sessions.website_session_id) as conv_rate,
+sum(orders.price_usd) as total_revenue,
+sum(orders.items_purchased) as total_products_sold,
+sum(orders.price_usd)/count(distinct orders.order_id) as average_order_value,
+sum(orders.items_purchased)/count(distinct orders.order_id) as products_per_order,
+sum(orders.price_usd)/count(distinct website_sessions.website_session_id) as revenue_per_session
+
+
+from website_sessions
+left join orders
+on orders.website_session_id=website_sessions.website_session_id
+where website_sessions.created_at between '2013-11-12' and '2014-01-12'
+group by 1;
+
+
+
+Create temporary table session_w_repeats
+select 
+new_sessions.user_id,
+new_sessions.website_session_id as new_session_id,
+website_sessions.website_session_id as repeat_session_id
+from
+
+
+(select
+user_id,
+website_session_id
+from website_sessions
+where created_at < '2014-11-01' 
+and created_at >= '2014-01-01'
+and is_repeat_session=0) as new_sessions
+left join website_sessions
+on website_sessions.user_id=new_sessions.user_id
+and  website_sessions.is_repeat_session=1
+and website_sessions.website_session_id >new_sessions.website_session_id
+and website_sessions.created_at < '2014-11-01'
+and website_sessions.created_at >= '2014-01-01';
+
+select * from session_w_repeats;
+
+select 
+repeat_sessions,
+count(distinct user_id) as users
+from (
+select
+user_id,
+count(distinct new_session_id) as new_sessions,
+count(distinct repeat_session_id) as repeat_sessions
+from session_w_repeats
+group by 1
+order by 3 desc
+) as user_level
+group by 1
+;
+
+
+
+
+
+
+
 
 
 
